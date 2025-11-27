@@ -1,7 +1,8 @@
-const PARTICLES_TOTAL = 64;
+const PARTICLES_TOTAL = 32; // Уменьшено для оптимизации
 const ROTATION_SPEED = 0.3;
 const EXTENSION_SPEED = 2.0;
-const EXTENSION_FREQUENCY = 0.5;
+const EXTENSION_FREQUENCY = 5.0;
+const MAX_STEPS = 32; // Уменьшено с 64
 
 async function initWebGPU() {
     if (!navigator.gpu) {
@@ -15,6 +16,11 @@ async function initWebGPU() {
 
     const device = await adapter.requestDevice();
     const canvas = document.getElementById('webgpu-canvas');
+
+    // Установка размеров canvas под размер окна
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
     const context = canvas.getContext('webgpu');
 
     const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -27,28 +33,23 @@ async function initWebGPU() {
 }
 
 function createParticleBuffer(device) {
-    // Создаем буфер для частиц с начальными позициями
-    const particleData = new Float32Array(PARTICLES_TOTAL * 8); // 8 float значения на частицу
+    const particleData = new Float32Array(PARTICLES_TOTAL * 8);
 
     for (let i = 0; i < PARTICLES_TOTAL; i++) {
-        // Начальные позиции ближе к центру
         const radius = Math.random() * 2.0;
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.random() * Math.PI;
 
-        particleData[i * 8 + 0] = radius * Math.sin(phi) * Math.cos(theta); // x
-        particleData[i * 8 + 1] = radius * Math.sin(phi) * Math.sin(theta); // y
-        particleData[i * 8 + 2] = radius * Math.cos(phi); // z
+        particleData[i * 8 + 0] = radius * Math.sin(phi) * Math.cos(theta);
+        particleData[i * 8 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+        particleData[i * 8 + 2] = radius * Math.cos(phi);
 
-        // Оси вращения для рандомного движения
-        particleData[i * 8 + 3] = (Math.random() - 0.5) * 2; // rotation x
-        particleData[i * 8 + 4] = (Math.random() - 0.5) * 2; // rotation y
-        particleData[i * 8 + 5] = (Math.random() - 0.5) * 2; // rotation z
+        particleData[i * 8 + 3] = (Math.random() - 0.5) * 2;
+        particleData[i * 8 + 4] = (Math.random() - 0.5) * 2;
+        particleData[i * 8 + 5] = (Math.random() - 0.5) * 2;
 
-        // Скорости расширения
-        particleData[i * 8 + 6] = 0.5 + Math.random() * 2.0; // extension speed
-
-        particleData[i * 8 + 7] = 0; // заполнение нулями
+        particleData[i * 8 + 6] = 0.5 + Math.random() * 2.0;
+        particleData[i * 8 + 7] = 0;
     }
 
     const particleBuffer = device.createBuffer({
@@ -57,7 +58,6 @@ function createParticleBuffer(device) {
     });
 
     device.queue.writeBuffer(particleBuffer, 0, particleData);
-
     return particleBuffer;
 }
 
@@ -106,6 +106,7 @@ function createShaderModule(device) {
         const ROTATION_SPEED: f32 = ${ROTATION_SPEED}f;
         const EXTENSION_SPEED: f32 = ${EXTENSION_SPEED}f;
         const EXTENSION_FREQUENCY: f32 = ${EXTENSION_FREQUENCY}f;
+        const MAX_STEPS: u32 = ${MAX_STEPS}u;
 
         fn rotAxis(axis: vec3<f32>, angle: f32) -> mat3x3<f32> {
             let normalized_axis = normalize(axis);
@@ -145,12 +146,10 @@ function createShaderModule(device) {
             let particle = particles[i];
             let base_pos = particle.position;
 
-            // Рандомное вращение
             let rotation_angle = uniforms.time * ROTATION_SPEED;
             let rotation_matrix = rotAxis(particle.rotation_axis, rotation_angle);
             let rotated_pos = rotation_matrix * base_pos;
 
-            // Движение от центра (щупальца)
             let extension_factor = (sin(uniforms.time * EXTENSION_FREQUENCY) + 1.0) * 0.5;
             let extension_distance = extension_factor * particle.extension_speed;
             let direction_from_center = normalize(rotated_pos);
@@ -206,7 +205,6 @@ uniforms.resolution.y);
             var ro = vec3<f32>(0.0, 0.0, -12.0);
             var rd = normalize(vec3<f32>(uv, 3.0));
 
-            // Общее вращение сцены
             let rotation_y = rotAxis(vec3<f32>(0.0, 1.0, 0.0), time * 0.5);
             let rotation_x = rotAxis(vec3<f32>(1.0, 0.0, 0.0), time * 0.3);
             let total_rotation = rotation_y * rotation_x;
@@ -217,7 +215,7 @@ uniforms.resolution.y);
             var t = 0.0;
             var p = vec3<f32>(0.0, 0.0, 0.0);
 
-            for (var i: u32 = 0u; i < 64u; i = i + 1u) {
+            for (var i: u32 = 0u; i < MAX_STEPS; i = i + 1u) {
                 p = ro + rd * t;
                 let d = SDF(p);
                 if (d < 0.001) {
@@ -226,7 +224,7 @@ uniforms.resolution.y);
                 if (t > 20.0) {
                     break;
                 }
-                t += d;
+                t += d * 0.8; // Увеличенный шаг для оптимизации
             }
 
             if (t < 20.0) {
@@ -268,7 +266,7 @@ function createRenderPipeline(device, pipelineLayout, shaderModule, canvasFormat
 }
 
 function createUniformBuffer(device) {
-    const uniformBufferSize = 4 * 5; // vec2 + f32 + f32 + padding
+    const uniformBufferSize = 4 * 5;
     return device.createBuffer({
         size: uniformBufferSize,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -296,12 +294,19 @@ class FPSCounter {
         this.frameCount = 0;
         this.lastTime = performance.now();
         this.fps = 0;
+        this.avgFps = 0;
+        this.frameTimes = [];
     }
 
     update() {
         this.frameCount++;
         const currentTime = performance.now();
         const deltaTime = currentTime - this.lastTime;
+        this.frameTimes.push(deltaTime);
+
+        if (this.frameTimes.length > 60) {
+            this.frameTimes.shift();
+        }
 
         if (deltaTime >= 1000) {
             this.fps = Math.round((this.frameCount * 1000) / deltaTime);
@@ -309,13 +314,29 @@ class FPSCounter {
             this.lastTime = currentTime;
         }
 
-        return this.fps;
+        const avgDeltaTime = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
+        this.avgFps = Math.round(1000 / avgDeltaTime);
+
+        return this.avgFps;
     }
 }
 
 async function main() {
     try {
         const { device, context, canvas } = await initWebGPU();
+
+        // Обработчик изменения размера окна
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            context.configure({
+                device: device,
+                format: navigator.gpu.getPreferredCanvasFormat(),
+            });
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas(); // Установка начального размера
 
         const particleBuffer = createParticleBuffer(device);
         const bindGroupLayout = createBindGroupLayout(device);
@@ -340,10 +361,10 @@ navigator.gpu.getPreferredCanvasFormat());
             lastFrameTime = currentFrameTime;
 
             const uniformData = new Float32Array([
-                canvas.width, canvas.height,  // resolution (vec2)
-                time,                          // time (f32)
-                deltaTime,                     // deltaTime (f32)
-                0                              // заполнение (f32)
+                canvas.width, canvas.height,
+                time,
+                deltaTime,
+                0
             ]);
 
             device.queue.writeBuffer(uniformBuffer, 0, uniformData);
@@ -353,7 +374,7 @@ navigator.gpu.getPreferredCanvasFormat());
             updateUniforms();
 
             const fps = fpsCounter.update();
-            infoElement.textContent = `FPS: ${fps}`;
+            infoElement.textContent = `FPS: ${fps} | Particles: ${PARTICLES_TOTAL} | Steps: ${MAX_STEPS}`;
 
             const commandEncoder = device.createCommandEncoder();
             const textureView = context.getCurrentTexture().createView();

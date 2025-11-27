@@ -5,14 +5,17 @@
     <style>
         body {
             margin: 0;
+            padding: 0;
+            overflow: hidden;
             background: #000;
             color: white;
             font-family: Arial, sans-serif;
+            font-size: 30px;
         }
         canvas {
             display: block;
-            width: 100%;
-            height: 100%;
+            width: 100vw;
+            height: 100vh;
         }
         #info {
             position: absolute;
@@ -22,12 +25,15 @@
             background: rgba(0,0,0,0.7);
             padding: 10px;
             border-radius: 5px;
+            font-size: 14px;
+            width: 400px;
+            height: 200px;
         }
     </style>
 </head>
 <body>
     <div id="info">FPS: 0</div>
-    <canvas id="webgpu-canvas" width="800" height="600"></canvas>
+    <canvas id="webgpu-canvas"></canvas>
     <script src="webgpu-sdf.js"></script>
 </body>
 </html>
