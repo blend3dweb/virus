@@ -1,42 +1,52 @@
-import * as THREE from 'three';
-import { WebGPURenderer } from 'three/webgpu';
-import {
-    Fn, float, vec2, vec3, vec4,
-    uniform, storage,
-    length, normalize, dot, cross,
-    sin, cos, clamp, min, max, abs, pow,
-    mix,
-    Loop, If, Return,
-    texture,
-    time
-} from 'three/tsl';
+import * as THREE from 'three/webgpu'
+import { color, Fn, If, Return, instancedArray, instanceIndex, uniform, select, attribute, uint, Loop, float,
+transformNormalToView, cross, triNoise3D, time } from 'three/tsl'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import WebGPU from 'three/addons/capabilities/WebGPU.js';
+import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
 
 // Параметры
-const PARTICLES_TOTAL = 32;
+const PARTICLES_TOTAL = 16; // Уменьшено для производительности
 const ROTATION_SPEED = 0.3;
 const EXTENSION_SPEED = 2.0;
 const EXTENSION_FREQUENCY = 0.5;
 const MAX_STEPS = 32;
 
+// Структура для частицы
+class ParticleData {
+    constructor(
+        public position: THREE.Vector3,
+        public rotationAxis: THREE.Vector3,
+        public extensionSpeed: number,
+        public phase: number
+    ) {}
+}
+
 // Создание частиц
-function createParticles() {
-    const particles = new Float32Array(PARTICLES_TOTAL * 8);
+function createParticles(): ParticleData[] {
+    const particles: ParticleData[] = [];
 
     for (let i = 0; i < PARTICLES_TOTAL; i++) {
-        const radius = Math.random() * 2.0;
+        const radius = 1.5 + Math.random() * 0.5;
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.random() * Math.PI;
 
-        particles[i * 8 + 0] = radius * Math.sin(phi) * Math.cos(theta);
-        particles[i * 8 + 1] = radius * Math.sin(phi) * Math.sin(theta);
-        particles[i * 8 + 2] = radius * Math.cos(phi);
+        const position = new THREE.Vector3(
+            radius * Math.sin(phi) * Math.cos(theta),
+            radius * Math.sin(phi) * Math.sin(theta),
+            radius * Math.cos(phi)
+        );
 
-        particles[i * 8 + 3] = (Math.random() - 0.5) * 2;
-        particles[i * 8 + 4] = (Math.random() - 0.5) * 2;
-        particles[i * 8 + 5] = (Math.random() - 0.5) * 2;
+        const rotationAxis = new THREE.Vector3(
+            (Math.random() - 0.5) * 2,
+            (Math.random() - 0.5) * 2,
+            (Math.random() - 0.5) * 2
+        ).normalize();
 
-        particles[i * 8 + 6] = 0.5 + Math.random() * 2.0;
-        particles[i * 8 + 7] = 0;
+        const extensionSpeed = 0.5 + Math.random() * 2.0;
+        const phase = Math.random() * Math.PI * 2;
+
+        particles.push(new ParticleData(position, rotationAxis, extensionSpeed, phase));
     }
 
     return particles;
@@ -49,22 +59,18 @@ const rotAxis = Fn(([axis, angle]) => {
     const c = cos(angle);
     const oc = float(1.0).sub(c);
 
-    return vec3(
-        vec3(
-            oc.mul(normalized_axis.x).mul(normalized_axis.x).add(c),
-            oc.mul(normalized_axis.x).mul(normalized_axis.y).sub(normalized_axis.z.mul(s)),
-            oc.mul(normalized_axis.z).mul(normalized_axis.x).add(normalized_axis.y.mul(s))
-        ),
-        vec3(
-            oc.mul(normalized_axis.x).mul(normalized_axis.y).add(normalized_axis.z.mul(s)),
-            oc.mul(normalized_axis.y).mul(normalized_axis.y).add(c),
-            oc.mul(normalized_axis.y).mul(normalized_axis.z).sub(normalized_axis.x.mul(s))
-        ),
-        vec3(
-            oc.mul(normalized_axis.z).mul(normalized_axis.x).sub(normalized_axis.y.mul(s)),
-            oc.mul(normalized_axis.y).mul(normalized_axis.z).add(normalized_axis.x.mul(s)),
-            oc.mul(normalized_axis.z).mul(normalized_axis.z).add(c)
-        )
+    return mat3(
+        oc.mul(normalized_axis.x).mul(normalized_axis.x).add(c),
+        oc.mul(normalized_axis.x).mul(normalized_axis.y).sub(normalized_axis.z.mul(s)),
+        oc.mul(normalized_axis.z).mul(normalized_axis.x).add(normalized_axis.y.mul(s)),
+        
+        oc.mul(normalized_axis.x).mul(normalized_axis.y).add(normalized_axis.z.mul(s)),
+        oc.mul(normalized_axis.y).mul(normalized_axis.y).add(c),
+        oc.mul(normalized_axis.y).mul(normalized_axis.z).sub(normalized_axis.x.mul(s)),
+        
+        oc.mul(normalized_axis.z).mul(normalized_axis.x).sub(normalized_axis.y.mul(s)),
+        oc.mul(normalized_axis.y).mul(normalized_axis.z).add(normalized_axis.x.mul(s)),
+        oc.mul(normalized_axis.z).mul(normalized_axis.z).add(c)
     );
 });
 
@@ -73,116 +79,115 @@ const sdDroplet = Fn(([p, a, b, r]) => {
     const pa = p.sub(a);
     const ba = b.sub(a);
     const h = clamp(dot(pa, ba).div(dot(ba, ba)), 0.0, 1.0);
-    return length(pa.sub(ba.mul(h))).sub(r.mul(h));
+    return length(pa.sub(ba.mul(h))).sub(r);
 });
 
 // Гладкое объединение
 const opSmoothUnion = Fn(([d1, d2, k]) => {
-    const k_scaled = k.mul(4.0);
-    const h = max(k_scaled.sub(abs(d1.sub(d2))), 0.0);
-    return min(d1, d2).sub(h.mul(h).mul(0.25).div(k_scaled));
+    const h = clamp(float(0.5).add(float(0.5).mul(d2.sub(d1)).div(k)), 0.0, 1.0);
+    return mix(d2, d1, h).sub(k.mul(h).mul(float(1.0).sub(h)));
 });
 
 // Получение текущей позиции частицы
-const getCurrentParticlePosition = Fn(([particles, i, timeValue]) => {
-    const particle = particles.element(i);
-    const base_pos = particle.position;
+const getCurrentParticlePosition = Fn(([basePos, rotationAxis, extensionSpeed, phaseOffset, timeValue]) => {
+    const rotationAngle = timeValue.mul(ROTATION_SPEED).add(phaseOffset);
+    const rotationMatrix = rotAxis(rotationAxis, rotationAngle);
+    const rotatedPos = rotationMatrix.mul(basePos);
 
-    const rotation_angle = timeValue.mul(ROTATION_SPEED);
-    const rotation_matrix = rotAxis(particle.rotation_axis, rotation_angle);
-    const rotated_pos = rotation_matrix.mul(base_pos);
+    const extensionFactor = sin(timeValue.mul(EXTENSION_FREQUENCY).add(phaseOffset)).add(1.0).mul(0.5);
+    const extensionDistance = extensionFactor.mul(extensionSpeed);
+    const directionFromCenter = normalize(rotatedPos);
+    const extendedPos = rotatedPos.add(directionFromCenter.mul(extensionDistance));
 
-    const extension_factor = sin(timeValue.mul(EXTENSION_FREQUENCY)).add(1.0).mul(0.5);
-    const extension_distance = extension_factor.mul(particle.extension_speed);
-    const direction_from_center = normalize(rotated_pos);
-    const extended_pos = rotated_pos.add(direction_from_center.mul(extension_distance));
-
-    return extended_pos;
-});
-
-// SDF функция
-const SDF = Fn(([p, particles, particlesTotal]) => {
-    let sphere = length(p).sub(2.0);
-
-    Loop({ start: 0, end: particlesTotal, type: 'uint' }, ({ i }) => {
-        const pos = getCurrentParticlePosition(particles, i, time);
-        sphere = opSmoothUnion(sphere, sdDroplet(p, vec3(0.0), pos, 0.1), 0.175);
-    });
-
-    Return(sphere);
-});
-
-// Функция цвета
-const getColor = Fn(([p, rd]) => {
-    const eps = 0.001;
-    const normal = normalize(vec3(
-        SDF(p.add(vec3(eps, 0.0, 0.0))).sub(SDF(p.sub(vec3(eps, 0.0, 0.0)))),
-        SDF(p.add(vec3(0.0, eps, 0.0))).sub(SDF(p.sub(vec3(0.0, eps, 0.0)))),
-        SDF(p.add(vec3(0.0, 0.0, eps))).sub(SDF(p.sub(vec3(0.0, 0.0, eps))))
-    ));
-
-    const color_mix = clamp(length(p).div(1.0).sub(2.0), 0.0, 1.0);
-    const colorValue = mix(vec3(0.0, 1.0, 1.0), vec3(0.0, 0.0, 1.0), color_mix);
-    const specular = pow(max(0.0, dot(normal, normalize(rd.negate()))), 4.0);
-    Return(vec3(1.0).sub(colorValue.mul(specular)));
+    return extendedPos;
 });
 
 // Основной шейдер
 const fragmentShader = Fn(() => {
-    const resolution = uniform(vec2());
-    const timeUniform = uniform(float());
+    const resolution = uniform(vec2(window.innerWidth, window.innerHeight));
+    const timeUniform = uniform(float(0));
 
-    const fragCoord = THREE.fragmentPosition;
-    const timeValue = timeUniform.div(2.0).add(1.0);
-    const uv = fragCoord.xy.mul(2.0).sub(resolution).div(resolution.x.min(resolution.y));
+    const fragCoord = vec2(THREE.fragmentCoordinate.xy);
+    const timeValue = timeUniform;
+    const uv = fragCoord.mul(2.0).sub(resolution).div(min(resolution.x, resolution.y));
 
-    let ro = vec3(0.0, 0.0, -12.0);
-    let rd = normalize(vec3(uv, 3.0));
+    let ro = vec3(0.0, 0.0, -8.0);
+    let rd = normalize(vec3(uv, 2.0));
 
-    const rotation_y = rotAxis(vec3(0.0, 1.0, 0.0), timeValue.mul(0.5));
-    const rotation_x = rotAxis(vec3(1.0, 0.0, 0.0), timeValue.mul(0.3));
-    const total_rotation = rotation_y.mul(rotation_x);
+    const rotationY = rotAxis(vec3(0.0, 1.0, 0.0), timeValue.mul(0.2));
+    const rotationX = rotAxis(vec3(1.0, 0.0, 0.0), timeValue.mul(0.1));
+    const totalRotation = rotationY.mul(rotationX);
 
-    ro = total_rotation.mul(ro);
-    rd = total_rotation.mul(rd);
+    ro = totalRotation.mul(ro);
+    rd = totalRotation.mul(rd);
 
     let t = float(0.0);
     let p = vec3(0.0);
+    let hit = float(0.0);
 
     Loop({ start: 0, end: MAX_STEPS, type: 'uint' }, ({ i }) => {
         p = ro.add(rd.mul(t));
-        const d = SDF(p);
-        If(d.lessThan(0.001), () => {
-            Break;
+        
+        // Базовая сфера
+        let dist = length(p).sub(1.5);
+        
+        // Добавляем капли
+        Loop({ start: 0, end: PARTICLES_TOTAL, type: 'uint' }, ({ i }) => {
+            const particleIndex = float(i);
+            const basePos = vec3(
+                sin(particleIndex.mul(2.39)).mul(1.5),
+                cos(particleIndex.mul(1.97)).mul(1.5),
+                sin(particleIndex.mul(1.71)).mul(1.5)
+            );
+            const rotationAxis = normalize(basePos);
+            const extensionSpeed = float(0.3).add(sin(particleIndex.mul(3.14)).mul(0.2).add(1.0).mul(0.5));
+            const phaseOffset = particleIndex.mul(2.0);
+            
+            const particlePos = getCurrentParticlePosition(basePos, rotationAxis, extensionSpeed, phaseOffset, timeValue);
+            const dropletDist = sdDroplet(p, vec3(0.0), particlePos, float(0.3));
+            dist = opSmoothUnion(dist, dropletDist, float(0.2));
+        });
+        
+        If(dist.lessThan(0.001), () => {
+            hit = float(1.0);
+            Break();
         });
         If(t.greaterThan(20.0), () => {
-            Break;
+            Break();
         });
-        t = t.add(d.mul(0.8));
+        t = t.add(dist.mul(0.8));
     });
 
-    If(t.lessThan(20.0), () => {
-        Return(vec4(getColor(p, rd), 1.0));
+    If(hit.equal(1.0), () => {
+        const eps = float(0.001);
+        const normal = normalize(vec3(
+            length(p.add(vec3(eps, 0.0, 0.0))).sub(length(p.sub(vec3(eps, 0.0, 0.0)))),
+            length(p.add(vec3(0.0, eps, 0.0))).sub(length(p.sub(vec3(0.0, eps, 0.0)))),
+            length(p.add(vec3(0.0, 0.0, eps))).sub(length(p.sub(vec3(0.0, 0.0, eps))))
+        ));
+
+        const colorMix = clamp(length(p).div(2.0).sub(0.5), 0.0, 1.0);
+        const colorValue = mix(vec3(0.0, 0.8, 1.0), vec3(0.2, 0.2, 0.8), colorMix);
+        const specular = pow(max(float(0.0), dot(normal, normalize(rd.negate()))), 8.0);
+        
+        Return(vec4(colorValue.add(vec3(1.0).mul(specular)), 1.0));
     }, () => {
-        const bg_color = mix(
-            vec3(1.0),
-            vec3(0.1, 0.5, 0.7),
-            length(uv).div(2.0)
+        const bgColor = mix(
+            vec3(0.05, 0.1, 0.2),
+            vec3(0.0, 0.3, 0.6),
+            length(uv).div(3.0)
         );
-        Return(vec4(bg_color, 1.0));
+        Return(vec4(bgColor, 1.0));
     });
 });
 
 class FPSCounter {
-    constructor() {
-        this.frameCount = 0;
-        this.lastTime = performance.now();
-        this.fps = 0;
-        this.avgFps = 0;
-        this.frameTimes = [];
-    }
+    private frameCount = 0;
+    private lastTime = performance.now();
+    private fps = 0;
+    private frameTimes: number[] = [];
 
-    update() {
+    update(): number {
         this.frameCount++;
         const currentTime = performance.now();
         const deltaTime = currentTime - this.lastTime;
@@ -199,88 +204,100 @@ class FPSCounter {
         }
 
         const avgDeltaTime = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
-        this.avgFps = Math.round(1000 / avgDeltaTime);
-
-        return this.avgFps;
+        return Math.round(1000 / avgDeltaTime);
     }
 }
 
 async function init() {
-    // Создание сцены
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.z = 5;
+    try {
+        // Создание сцены
+        const scene = new THREE.Scene();
+        const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    // Создание рендерера
-    const renderer = new WebGPURenderer({ antialias: true });
-    await renderer.init(); // Важно: дождаться инициализации
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setAnimationLoop(animate);
-    document.body.appendChild(renderer.domElement);
+        // Создание рендерера
+        const renderer = new WebGPURenderer({ 
+            antialias: true,
+            powerPreference: 'high-performance'
+        });
+        
+        await renderer.init();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
 
-    // Создание частиц
-    const particleData = createParticles();
-    const particlesStorage = storage(particleData, 'vec4', PARTICLES_TOTAL * 2); // 2 vec4 на частицу
+        // Создание материала с TSL шейдером
+        const material = new THREE.MeshBasicMaterial();
+        material.fragmentNode = fragmentShader();
 
-    // Создание uniform для разрешения
-    const resolutionUniform = uniform(vec2(window.innerWidth, window.innerHeight));
-    const timeUniform = uniform(float(0));
+        // Создание полноэкранного квадрата
+        const geometry = new THREE.PlaneGeometry(2, 2);
+        const quad = new THREE.Mesh(geometry, material);
+        scene.add(quad);
 
-    // Создание материала с TSL шейдером
-    const material = new THREE.MeshBasicMaterial();
-    material.fragmentNode = fragmentShader();
+        // FPS счетчик
+        const fpsCounter = new FPSCounter();
+        const infoElement = document.getElementById('info');
 
-    // Создание полноэкранного квадрата
-    const geometry = new THREE.PlaneGeometry(2, 2);
-    const quad = new THREE.Mesh(geometry, material);
-    scene.add(quad);
+        let startTime = Date.now();
 
-    // FPS счетчик
-    const fpsCounter = new FPSCounter();
-    const infoElement = document.getElementById('info');
+        function animate() {
+            const currentTime = (Date.now() - startTime) / 1000;
+            
+            // Обновляем uniform времени
+            const timeUniform = fragmentShader.getUniform('timeUniform');
+            if (timeUniform) {
+                timeUniform.value = currentTime;
+            }
 
-    let startTime = Date.now();
+            renderer.render(scene, camera);
 
-    function animate() {
-        const currentTime = (Date.now() - startTime) / 1000;
-        timeUniform.value = currentTime;
+            const fps = fpsCounter.update();
+            if (infoElement) {
+                infoElement.textContent = `FPS: ${fps} | Particles: ${PARTICLES_TOTAL} | Steps: ${MAX_STEPS}`;
+            }
+        }
 
-        renderer.render(scene, camera);
+        renderer.setAnimationLoop(animate);
 
-        const fps = fpsCounter.update();
+        // Обработчик изменения размера
+        function onWindowResize() {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            
+            // Обновляем uniform разрешения
+            const resolutionUniform = fragmentShader.getUniform('resolution');
+            if (resolutionUniform) {
+                resolutionUniform.value.set(window.innerWidth, window.innerHeight);
+            }
+        }
+
+        window.addEventListener('resize', onWindowResize);
+
+    } catch (error) {
+        console.error('Error initializing WebGPU:', error);
+        const infoElement = document.getElementById('info');
         if (infoElement) {
-            infoElement.textContent = `FPS: ${fps} | Particles: ${PARTICLES_TOTAL} | Steps: ${MAX_STEPS}`;
+            infoElement.textContent = 'Error: ' + (error as Error).message;
         }
     }
-
-    // Обработчик изменения размера
-    function onWindowResize() {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        resolutionUniform.value.set(window.innerWidth, window.innerHeight);
-    }
-
-    window.addEventListener('resize', onWindowResize);
 }
 
 // Проверка поддержки WebGPU
 async function checkWebGPUSupport() {
     try {
         if (navigator.gpu) {
-            await init();
-        } else {
-            const infoElement = document.getElementById('info');
-            if (infoElement) {
-                infoElement.textContent = 'WebGPU not supported in this browser';
+            const adapter = await navigator.gpu.requestAdapter();
+            if (adapter) {
+                await init();
+            } else {
+                throw new Error('No suitable GPU adapter found');
             }
-            console.error('WebGPU not supported');
+        } else {
+            throw new Error('WebGPU not supported in this browser');
         }
     } catch (error) {
-        console.error('Error initializing WebGPU:', error);
+        console.error('WebGPU support check failed:', error);
         const infoElement = document.getElementById('info');
         if (infoElement) {
-            infoElement.textContent = 'Error: ' + error.message;
+            infoElement.textContent = 'WebGPU not supported: ' + (error as Error).message;
         }
     }
 }
