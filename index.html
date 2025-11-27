@@ -3,11 +3,30 @@
 <head>
     <title>WebGPU SDF Droplets</title>
     <style>
-        body { margin: 0; }
-        canvas { display: block; width: 100%; height: 100%; }
+        body {
+            margin: 0;
+            background: #000;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
     </style>
 </head>
 <body>
+    <div id="info">FPS: 0</div>
     <canvas id="webgpu-canvas" width="800" height="600"></canvas>
     <script src="webgpu-sdf.js"></script>
 </body>
