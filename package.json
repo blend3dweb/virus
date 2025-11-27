@@ -1,0 +1,19 @@
+{
+  "name": "virus",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "blend3dweb",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@types/three": "^0.181.0",
+    "three": "^0.181.2",
+    "vite": "^7.2.4"
+  }
+}

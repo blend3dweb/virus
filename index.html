@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>WebGPU SDF Droplets</title>
+    <title>WebGPU SDF Droplets - Three.js TSL</title>
     <style>
         body {
             margin: 0;
@@ -10,7 +10,6 @@
             background: #000;
             color: white;
             font-family: Arial, sans-serif;
-            font-size: 30px;
         }
         canvas {
             display: block;
@@ -32,8 +31,17 @@
     </style>
 </head>
 <body>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "/build/three.webgpu.js",
+                "three/webgpu": "/build/three.webgpu.js",
+                "three/tsl": "/build/three.tsl.js",
+                "three/addons/": "/jsm/"
+            }
+        }
+    </script>
     <div id="info">FPS: 0</div>
-    <canvas id="webgpu-canvas"></canvas>
-    <script src="webgpu-sdf.js"></script>
+    <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
